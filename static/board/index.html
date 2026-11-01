@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Канбан</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Syne:wght@700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css?v=8" />
+</head>
+<body>
+  <div id="app" class="app">
+    <header class="head">
+      <div class="bar">
+        <a class="back" href="/#cases">Кейсы</a>
+        <div class="name">
+          <h1 v-if="!mine" class="title">{{ board.title || "Канбан" }}</h1>
+          <input v-else class="title" :value="board.title" aria-label="Название доски" maxlength="60" @change="renameBoard($event.target.value)" @keydown.enter.prevent="$event.target.blur()" />
+          <p v-if="board.public && !user" class="lede">Общая доска открыта без входа. Свои доски — после «Демо владельца».</p>
+        </div>
+        <span class="live" :class="{ on: live }"><i></i>{{ live ? "на связи" : (tries ? "нет связи" : "подключаюсь") }}</span>
+        <div class="who">
+          <template v-if="user">
+            <button type="button" class="user" @click="toggle('menu')">
+              <span class="avatar" :style="paint(user.name)">{{ initials(user.name) }}</span>
+              <span class="user-name">{{ user.name }}<small>{{ roleLabel }}</small></span>
+            </button>
+            <div v-if="pop === 'menu'" class="menu">
+              <button type="button" @click="logout">Выйти</button>
+              <button v-if="mine" type="button" class="danger" @click="removeBoard">{{ arm === "board" ? "Точно удалить" : "Удалить доску" }}</button>
+            </div>
+          </template>
+          <template v-else>
+            <button type="button" class="primary" @click="demo('owner')">Демо владельца</button>
+            <button type="button" @click="demo('member')">Демо участника</button>
+            <button type="button" @click="toggle('auth')">Войти</button>
+          </template>
+        </div>
+      </div>
+      <div class="tools">
+        <div class="switcher">
+          <button v-for="item in boards" :key="item.id" type="button" :class="{ on: item.id === board.id }" @click="pick(item.id)">
+            <span>{{ item.title }}</span>
+            <small>{{ item.role }}</small>
+          </button>
+        </div>
+        <label class="search">
+          <span aria-hidden="true">⌕</span>
+          <input ref="search" v-model="query" placeholder="Поиск" aria-label="Поиск по карточкам" />
+        </label>
+        <button v-for="item in tags" :key="item" type="button" class="pill" :class="{ on: tagFilter === item }" @click="tagFilter = tagFilter === item ? '' : item">{{ item }}</button>
+        <button v-if="filtering" type="button" class="quiet" @click="clearFilter">Сбросить</button>
+        <span v-if="filtering" class="muted">{{ matchCount }}</span>
+        <div v-if="faces.length" class="faces">
+          <span v-for="name in faces" :key="name" class="avatar" :style="paint(name)" :title="name">{{ initials(name) }}</span>
+          <span v-if="extraFaces" class="avatar more" :title="extraFaces + ' ещё'">+{{ extraFaces }}</span>
+        </div>
+        <form v-if="mine" class="invite" @submit.prevent="invite">
+          <input v-model="inviteEmail" type="email" maxlength="80" placeholder="Почта участника" aria-label="Почта участника" />
+          <button type="submit">Пригласить</button>
+        </form>
+        <button v-if="board.public" type="button" class="quiet" @click="reset">{{ arm === "reset" ? "Точно сбросить" : "Сбросить демо" }}</button>
+        <button v-if="user" type="button" @click="toggle('create')">Новая доска</button>
+        <button type="button" :class="{ on: pop === 'history' }" @click="toggle('history')">История<span v-if="board.events && board.events.length" class="count">{{ board.events.length }}</span></button>
+      </div>
+      <form v-if="pop === 'auth'" class="popover" @submit.prevent="login">
+        <input v-model="authName" maxlength="24" placeholder="Имя" aria-label="Имя" autocomplete="name" />
+        <input v-model="authEmail" type="email" maxlength="80" placeholder="Почта" aria-label="Почта" autocomplete="username" />
+        <input v-model="authPass" type="password" maxlength="72" placeholder="Пароль" aria-label="Пароль" autocomplete="current-password" />
+        <div class="row">
+          <button class="primary" type="submit">Войти</button>
+          <button type="button" @click="register">Регистрация</button>
+        </div>
+      </form>
+      <form v-if="pop === 'create'" class="popover" @submit.prevent="create">
+        <input v-model="freshTitle" maxlength="60" placeholder="Название доски" aria-label="Название доски" />
+        <select v-model="template" aria-label="Шаблон">
+          <option value="dev">Бэклог / в работе / готово</option>
+          <option value="launch">Запуск</option>
+          <option value="empty">Одна колонка</option>
+        </select>
+        <div class="row">
+          <button class="primary" type="submit">Создать</button>
+          <button type="button" @click="pop = ''">Отмена</button>
+        </div>
+      </form>
+      <section v-if="pop === 'history'" class="history" aria-label="История">
+        <p v-if="!history.length" class="empty">Пока ничего не меняли</p>
+        <ol>
+          <li v-for="(event, index) in history" :key="index"><time>{{ event.at }}</time>{{ event.text }}</li>
+        </ol>
+      </section>
+    </header>
+    <button v-if="pop" class="scrim" type="button" aria-label="Закрыть меню" @click="pop = ''"></button>
+    <p v-if="!ready" class="loading">Открываю доску…</p>
+    <div v-else class="board" :class="{ dragging: !!drag }">
+      <section v-for="column in board.columns" :key="column.id" class="column" :class="{ over: overCol === column.id }" @dragover.prevent="hoverColumn(column)" @drop="dropColumn(column)">
+        <header>
+          <i class="mark" :class="tone(column)"></i>
+          <input class="colname" :value="column.title" aria-label="Название колонки" maxlength="32" @change="renameColumn(column, $event.target.value)" @keydown.enter.prevent="$event.target.blur()" />
+          <span class="count">{{ countLabel(column) }}</span>
+        </header>
+        <div class="cards">
+          <p v-if="!shown(column.id).length" class="empty">{{ filtering ? "Нет таких карточек" : "Пусто" }}</p>
+          <article v-for="card in shown(column.id)" :key="card.id" class="card" :class="{ late: late(card), on: open === card.id, over: overCard === card.id, dragging: drag === card.id }" draggable="true" @dragstart="dragStart(card, $event)" @dragend="dragEnd" @dragover.prevent="hoverCard(card)" @drop.stop="dropCard(card)" @click="openCard(card)">
+            <div class="card-top">
+              <div class="tags">
+                <button v-for="item in card.tags" :key="item" type="button" class="pill" @click.stop="tagFilter = item">{{ item }}</button>
+              </div>
+              <span class="grip" aria-hidden="true"></span>
+            </div>
+            <h3>{{ card.title }}</h3>
+            <p v-if="card.description">{{ card.description }}</p>
+            <footer>
+              <span v-if="card.checks && card.checks.length" class="chip" title="Чек-лист">{{ checksDone(card) }}/{{ card.checks.length }}</span>
+              <span v-if="card.comments && card.comments.length" class="chip" title="Комментарии">{{ card.comments.length }} ком.</span>
+              <span v-if="card.links && card.links.length" class="chip" title="Вложения">{{ card.links.length }} ссыл.</span>
+              <span v-if="card.due" class="chip due" :class="{ late: late(card), today: sameDay(card) }">{{ dueLabel(card) }}</span>
+              <span class="spacer"></span>
+              <span v-if="card.assignee" class="avatar" :style="paint(card.assignee)" :title="card.assignee">{{ initials(card.assignee) }}</span>
+            </footer>
+          </article>
+        <form v-if="composer === column.id" class="compose" @submit.prevent="add">
+          <input ref="draftTitle" v-model="title" maxlength="80" placeholder="Название" aria-label="Название" required />
+          <textarea v-model="description" maxlength="400" rows="2" placeholder="Описание" aria-label="Описание"></textarea>
+          <input v-model="assignee" maxlength="24" placeholder="Исполнитель" aria-label="Исполнитель" list="people" />
+          <input v-model="due" type="date" aria-label="Срок" />
+          <input v-model="tag" maxlength="40" placeholder="Метки через запятую" aria-label="Метки" />
+          <div class="row">
+            <button class="primary" type="submit">Добавить</button>
+            <button type="button" @click="composer = ''">Отмена</button>
+          </div>
+        </form>
+        <button v-else type="button" class="add" @click="openComposer(column.id)">Новая карточка</button>
+        </div>
+      </section>
+      <form class="column addcol" @submit.prevent="addColumn">
+        <input v-model="columnTitle" maxlength="32" placeholder="Новая колонка" aria-label="Новая колонка" />
+        <button class="primary" type="submit">Добавить</button>
+      </form>
+    </div>
+    <datalist id="people"><option v-for="name in people" :key="name" :value="name"></option></datalist>
+    <div v-if="active" class="shade" @click="open = ''"></div>
+    <aside v-if="active" class="drawer" role="dialog" aria-modal="true" :aria-label="active.title">
+      <div class="drawer-head">
+        <p class="kicker">{{ columnTitleOf(active) }}</p>
+        <button type="button" @click="open = ''">Закрыть</button>
+      </div>
+      <div class="body">
+        <input class="sheet-title" v-model="active.title" maxlength="80" aria-label="Название карточки" @change="save(active)" @keydown.enter.prevent="$event.target.blur()" />
+        <label class="field"><span>Описание</span><textarea v-model="active.description" maxlength="400" rows="4" @change="save(active)"></textarea></label>
+        <div class="pair">
+          <label class="field"><span>Исполнитель</span><input v-model="active.assignee" maxlength="24" list="people" @change="save(active)" /></label>
+          <label class="field"><span>Срок</span><input v-model="active.due" type="date" @change="save(active)" /></label>
+        </div>
+        <label class="field">
+          <span>Колонка</span>
+          <select :value="active.column" @change="move(active, $event.target.value)">
+            <option v-for="column in board.columns" :key="column.id" :value="column.id">{{ column.title }}</option>
+          </select>
+        </label>
+        <div class="field">
+          <span>Порядок</span>
+          <div class="row">
+            <button type="button" @click="nudge(active, -1)">Выше</button>
+            <button type="button" @click="nudge(active, 1)">Ниже</button>
+          </div>
+        </div>
+        <div class="field">
+          <span>Метки</span>
+          <div class="tags">
+            <button v-for="item in active.tags" :key="item" type="button" class="pill on" @click="removeTag(active, item)">{{ item }} ×</button>
+          </div>
+          <input v-model="active.tagDraft" maxlength="24" placeholder="Новая метка, Enter" aria-label="Новая метка" @keydown.enter.prevent="pushTag(active)" />
+        </div>
+        <div class="field">
+          <span>Чек-лист<template v-if="active.checks && active.checks.length"> · {{ checksDone(active) }} из {{ active.checks.length }}</template></span>
+          <div v-if="active.checks && active.checks.length" class="meter"><i :style="{ width: ratio(active) }"></i></div>
+          <label v-for="item in active.checks" :key="item.id" class="check" :class="{ done: item.done }">
+            <input type="checkbox" :checked="item.done" @change="toggle(active, item)" />
+            <span>{{ item.text }}</span>
+          </label>
+          <input v-model="active.checkDraft" maxlength="80" placeholder="Новый пункт, Enter" aria-label="Новый пункт" @keydown.enter.prevent="addCheck(active)" />
+        </div>
+        <div class="field">
+          <span>Вложения</span>
+          <p v-for="link in active.links" :key="link.url" class="link"><a :href="link.url" :target="link.url.indexOf('http') === 0 ? '_blank' : null" rel="noreferrer">{{ link.name }}</a></p>
+          <input v-model="active.linkName" maxlength="40" placeholder="Имя" aria-label="Имя вложения" />
+          <input v-model="active.linkUrl" maxlength="200" placeholder="https:// или /путь" aria-label="Ссылка" @keydown.enter.prevent="addLink(active)" />
+        </div>
+        <div class="field">
+          <span>Комментарии</span>
+          <p v-if="!active.comments || !active.comments.length" class="empty">Пока нет</p>
+          <ol class="thread">
+            <li v-for="comment in active.comments" :key="comment.id">
+              <div><b>{{ comment.author }}</b><time>{{ comment.at }}</time></div>
+              <p>{{ comment.text }}</p>
+            </li>
+          </ol>
+        </div>
+        <button type="button" class="danger bare" @click="dropCardOut(active)">{{ arm === active.id ? "Точно удалить" : "Удалить карточку" }}</button>
+      </div>
+      <form class="reply" @submit.prevent="comment(active)">
+        <input v-model="active.draft" maxlength="200" placeholder="Комментарий" aria-label="Комментарий" />
+        <button class="primary" type="submit">Отправить</button>
+      </form>
+    </aside>
+    <p v-if="error" class="toast" role="status">{{ error }}</p>
+  </div>
+  <script src="vue.global.prod.js"></script>
+  <script src="app.js?v=5"></script>
+</body>
+</html>
