@@ -59,6 +59,13 @@ func NewHandler(board *BoardStore, rooms *RoomStore, watch *Monitor, static map[
 
 func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("pong")) })
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"message": "Метод не поддерживается"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
 	mux.HandleFunc("/board/ws", h.boardWS)
 	mux.HandleFunc("/board/api/", h.boardAPI)
 	mux.HandleFunc("/rooms/api/", h.roomsAPI)
